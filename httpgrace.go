@@ -127,22 +127,12 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 
 // ListenAndServe starts the server with graceful shutdown on the given address.
 func (s *Server) ListenAndServe(addr string) error {
-	s.Server.Addr = addr
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	return s.serve(ln, "", "")
+	return s.serveWithAddr(addr, "", "")
 }
 
 // ListenAndServeTLS starts the TLS server with graceful shutdown.
 func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
-	s.Server.Addr = addr
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	return s.serve(ln, certFile, keyFile)
+	return s.serveWithAddr(addr, certFile, keyFile)
 }
 
 // Serve starts the server on the given listener.
@@ -152,6 +142,19 @@ func (s *Server) Serve(ln net.Listener) error {
 
 // ServeTLS starts the TLS server on the given listener.
 func (s *Server) ServeTLS(ln net.Listener, certFile, keyFile string) error {
+	return s.serve(ln, certFile, keyFile)
+}
+
+// serveWithAddr creates a listener and serves on it
+func (s *Server) serveWithAddr(addr, certFile, keyFile string) error {
+	s.Server.Addr = addr
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
 	return s.serve(ln, certFile, keyFile)
 }
 
@@ -194,7 +197,7 @@ func (s *Server) serve(ln net.Listener, certFile, keyFile string) error {
 	return shutdownErr
 }
 
-func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- error) { // Changed from chan<- struct{} to chan<- error
+func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- error) {
 	defer close(quit)
 
 	sig := <-sigChan
@@ -227,6 +230,8 @@ func listenAndServeInternal(addr, certFile, keyFile string, handler http.Handler
 	if err != nil {
 		return err
 	}
+	defer ln.Close()
+
 	return serveInternal(ln, certFile, keyFile, handler, opts...)
 }
 

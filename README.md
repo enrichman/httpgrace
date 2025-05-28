@@ -2,17 +2,9 @@
 
 `httpgrace` is a minimal Go library providing drop-in replacements for the `net/http` standard library functions to run HTTP/HTTPS servers with graceful shutdown support out of the box.
 
----
+## Installation and Usage
 
-## Installation
-
-`go get github.com/yourusername/httpgrace`
-
----
-
-## Usage
-
-Simply replace `http` with `httpgrace` in your existing code:
+Just `go get github.com/yourusername/httpgrace` and replace `http` with `httpgrace` in your existing code:
 
 ```go
 // Before
@@ -24,18 +16,13 @@ httpgrace.ListenAndServe(":8080", handler)
 
 That's it! Your server now gracefully shuts down on SIGINT/SIGTERM signals.
 
----
-
-
 ## Features
 
-- API compatible with `net/http`'s `ListenAndServe` and `ListenAndServeTLS`  
-- Graceful shutdown on `SIGINT` / `SIGTERM` signals  
-- Configurable shutdown timeout (default 10 seconds)  
+- API compatible with `net/http`'s `ListenAndServe`, `ListenAndServeTLS`, `Serve`, and `ServeTLS`  
+- Graceful shutdown on `SIGINT`/`SIGTERM` signals  
+- Configurable shutdown timeout (default 10s)  
 - Built-in structured logging via Go's `slog` package  
 - Minimal and dead-simple to integrate — just swap your import path!
-
----
 
 ## API Reference
 
@@ -53,26 +40,16 @@ httpgrace.Serve(listener, handler, opts...)
 httpgrace.ServeTLS(listener, certFile, keyFile, handler, opts...)
 ```
 
-### Advanced Server Struct
+### Server Struct
 
-For more control, use the Server struct:
+If you need more granular control, you can use the Server struct directly:
 
 ```go
-srv := httpgrace.NewServer(handler,
-    httpgrace.WithTimeout(30*time.Second),
-    httpgrace.WithServerOptions(
-        httpgrace.WithReadTimeout(10*time.Second),
-        httpgrace.WithWriteTimeout(10*time.Second),
-    ),
-)
-
-// Start server
+srv := httpgrace.NewServer(handler)
 if err := srv.ListenAndServe(":8080"); err != nil {
     log.Fatal(err)
 }
 ```
-
----
 
 ## Configuration Options
 
@@ -91,14 +68,25 @@ httpgrace.WithLogger(customLogger)
 
 ### Server Options
 
-Configure the underlying http.Server:
+You can configure the underlying http.Server with the provided functions or custom ones:
 
 ```go
-httpgrace.WithServerOptions(
-    httpgrace.WithReadTimeout(30*time.Second),
-    httpgrace.WithWriteTimeout(30*time.Second), 
-    httpgrace.WithIdleTimeout(120*time.Second),
+srv := httpgrace.NewServer(handler,
+    httpgrace.WithServerOptions(
+        httpgrace.WithReadTimeout(10*time.Second),
+        httpgrace.WithWriteTimeout(10*time.Second),
+        httpgrace.WithIdleTimeout(120*time.Second),
+        // or with your custom ServerOption
+        func(srv *http.Server) {
+            srv.ErrorLog = log.New(os.Stdout, "", 0)
+        },
+    ),
 )
+
+// Start server
+if err := srv.ListenAndServe(":8080"); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Graceful Shutdown Behavior
@@ -106,8 +94,6 @@ httpgrace.WithServerOptions(
 `httpgrace` listens for `SIGINT` and `SIGTERM` signals. Upon receiving one, it stops accepting new connections and waits up to the configured shutdown timeout for active connections to finish before exiting.
 
 This ensures your server shuts down cleanly without dropping in-flight requests abruptly.
-
----
 
 ## Logging
 
@@ -121,20 +107,14 @@ time=2025-05-28T22:14:28.258+02:00 level=INFO msg="shutdown signal received" sig
 time=2025-05-28T22:14:28.258+02:00 level=INFO msg="server shutdown completed gracefully" duration=204.273µs
 ```
 
----
-
 ## Requirements
 
 - Go 1.21+ (for slog package support)
 - No external dependencies!
 
----
-
-## Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
----
 
 ## License
 
