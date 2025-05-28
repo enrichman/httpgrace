@@ -156,12 +156,10 @@ func (s *Server) ServeTLS(ln net.Listener, certFile, keyFile string) error {
 }
 
 func (s *Server) serve(ln net.Listener, certFile, keyFile string) error {
-	// Setup signal handling before starting server to avoid race conditions
-	quit := make(chan struct{})
+	quit := make(chan error)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, s.config.signals...)
-
-	// Ensure cleanup of signal handler
 	defer signal.Stop(sigChan)
 
 	// Start shutdown handler
@@ -191,12 +189,12 @@ func (s *Server) serve(ln net.Listener, certFile, keyFile string) error {
 		return err
 	}
 
-	// Wait for graceful shutdown to complete
-	<-quit
-	return nil
+	// Wait for graceful shutdown to complete and return any shutdown error
+	shutdownErr := <-quit
+	return shutdownErr
 }
 
-func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- struct{}) {
+func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- error) { // Changed from chan<- struct{} to chan<- error
 	defer close(quit)
 
 	sig := <-sigChan
@@ -206,15 +204,21 @@ func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- struct{}) 
 	defer cancel()
 
 	shutdownStart := time.Now()
-	if err := s.Server.Shutdown(ctx); err != nil {
-		s.config.logger.Error("server shutdown failed",
+	err := s.Server.Shutdown(ctx)
+	if err != nil {
+		s.config.logger.Error(
+			"server shutdown failed",
 			"error", err,
 			"timeout", s.config.shutdownTimeout,
-			"duration", time.Since(shutdownStart))
+			"duration", time.Since(shutdownStart),
+		)
 	} else {
-		s.config.logger.Info("server shutdown completed gracefully",
-			"duration", time.Since(shutdownStart))
+		s.config.logger.Info(
+			"server shutdown completed gracefully",
+			"duration", time.Since(shutdownStart),
+		)
 	}
+	quit <- err
 }
 
 // Internal implementation for backwards compatibility
