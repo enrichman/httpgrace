@@ -17,12 +17,18 @@ type Option func(*serverConfig)
 type serverConfig struct {
 	shutdownTimeout time.Duration
 	logger          *slog.Logger
+	signals         []os.Signal
+	serverOptions   []ServerOption
 }
+
+// ServerOption configures the underlying http.Server
+type ServerOption func(*http.Server)
 
 func defaultConfig() serverConfig {
 	return serverConfig{
 		shutdownTimeout: 10 * time.Second,
 		logger:          slog.Default(),
+		signals:         []os.Signal{syscall.SIGINT, syscall.SIGTERM},
 	}
 }
 
@@ -40,6 +46,35 @@ func WithLogger(l *slog.Logger) Option {
 			cfg.logger = l
 		}
 	}
+}
+
+// WithSignals sets which OS signals trigger graceful shutdown.
+func WithSignals(signals ...os.Signal) Option {
+	return func(cfg *serverConfig) {
+		if len(signals) > 0 {
+			cfg.signals = signals
+		}
+	}
+}
+
+// WithServerOptions allows configuring the underlying http.Server.
+func WithServerOptions(opts ...ServerOption) Option {
+	return func(cfg *serverConfig) {
+		cfg.serverOptions = append(cfg.serverOptions, opts...)
+	}
+}
+
+// Server option helpers
+func WithReadTimeout(d time.Duration) ServerOption {
+	return func(srv *http.Server) { srv.ReadTimeout = d }
+}
+
+func WithWriteTimeout(d time.Duration) ServerOption {
+	return func(srv *http.Server) { srv.WriteTimeout = d }
+}
+
+func WithIdleTimeout(d time.Duration) ServerOption {
+	return func(srv *http.Server) { srv.IdleTimeout = d }
 }
 
 // ListenAndServe starts a non-TLS HTTP server with graceful shutdown.
@@ -62,7 +97,127 @@ func ServeTLS(ln net.Listener, certFile, keyFile string, handler http.Handler, o
 	return serveInternal(ln, certFile, keyFile, handler, opts...)
 }
 
-// Internal ListenAndServe implementation.
+// Server wraps http.Server with built-in graceful shutdown capabilities.
+type Server struct {
+	*http.Server
+	config serverConfig
+}
+
+// NewServer creates a new Server with graceful shutdown capabilities.
+func NewServer(handler http.Handler, opts ...Option) *Server {
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	srv := &http.Server{
+		Handler: handler,
+	}
+
+	// Apply server options
+	for _, opt := range cfg.serverOptions {
+		opt(srv)
+	}
+
+	return &Server{
+		Server: srv,
+		config: cfg,
+	}
+}
+
+// ListenAndServe starts the server with graceful shutdown on the given address.
+func (s *Server) ListenAndServe(addr string) error {
+	s.Server.Addr = addr
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.serve(ln, "", "")
+}
+
+// ListenAndServeTLS starts the TLS server with graceful shutdown.
+func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
+	s.Server.Addr = addr
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.serve(ln, certFile, keyFile)
+}
+
+// Serve starts the server on the given listener.
+func (s *Server) Serve(ln net.Listener) error {
+	return s.serve(ln, "", "")
+}
+
+// ServeTLS starts the TLS server on the given listener.
+func (s *Server) ServeTLS(ln net.Listener, certFile, keyFile string) error {
+	return s.serve(ln, certFile, keyFile)
+}
+
+func (s *Server) serve(ln net.Listener, certFile, keyFile string) error {
+	// Setup signal handling before starting server to avoid race conditions
+	quit := make(chan struct{})
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, s.config.signals...)
+
+	// Ensure cleanup of signal handler
+	defer signal.Stop(sigChan)
+
+	// Start shutdown handler
+	go s.handleShutdown(sigChan, quit)
+
+	// Log server start
+	mode := "HTTP"
+	if certFile != "" && keyFile != "" {
+		mode = "HTTPS"
+	}
+	s.config.logger.Info("starting server",
+		"mode", mode,
+		"addr", ln.Addr().String(),
+		"shutdown_timeout", s.config.shutdownTimeout)
+
+	// Start server
+	var err error
+	if certFile != "" && keyFile != "" {
+		err = s.Server.ServeTLS(ln, certFile, keyFile)
+	} else {
+		err = s.Server.Serve(ln)
+	}
+
+	// Handle server errors
+	if err != nil && err != http.ErrServerClosed {
+		s.config.logger.Error("server error", "error", err)
+		return err
+	}
+
+	// Wait for graceful shutdown to complete
+	<-quit
+	return nil
+}
+
+func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- struct{}) {
+	defer close(quit)
+
+	sig := <-sigChan
+	s.config.logger.Info("shutdown signal received", "signal", sig.String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
+	defer cancel()
+
+	shutdownStart := time.Now()
+	if err := s.Server.Shutdown(ctx); err != nil {
+		s.config.logger.Error("server shutdown failed",
+			"error", err,
+			"timeout", s.config.shutdownTimeout,
+			"duration", time.Since(shutdownStart))
+	} else {
+		s.config.logger.Info("server shutdown completed gracefully",
+			"duration", time.Since(shutdownStart))
+	}
+}
+
+// Internal implementation for backwards compatibility
 func listenAndServeInternal(addr, certFile, keyFile string, handler http.Handler, opts ...Option) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -71,7 +226,6 @@ func listenAndServeInternal(addr, certFile, keyFile string, handler http.Handler
 	return serveInternal(ln, certFile, keyFile, handler, opts...)
 }
 
-// Internal unified serve function for both Listener-based servers.
 func serveInternal(ln net.Listener, certFile, keyFile string, handler http.Handler, opts ...Option) error {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -82,43 +236,15 @@ func serveInternal(ln net.Listener, certFile, keyFile string, handler http.Handl
 		Handler: handler,
 	}
 
-	// Log server start with address and mode (TLS or not)
-	mode := "HTTP"
-	if certFile != "" && keyFile != "" {
-		mode = "HTTPS"
-	}
-	cfg.logger.Info("starting server", "mode", mode, "addr", ln.Addr().String())
-
-	quit := make(chan struct{})
-
-	go func() {
-		sigint := make(chan os.Signal, 1)
-		signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
-
-		sig := <-sigint
-		cfg.logger.Info("signal received, shutting down server", "signal", sig.String())
-
-		ctx, cancel := context.WithTimeout(context.Background(), cfg.shutdownTimeout)
-		defer cancel()
-
-		if err := srv.Shutdown(ctx); err != nil {
-			cfg.logger.Error("error during server shutdown", "error", err)
-		}
-
-		close(quit)
-	}()
-
-	var err error
-	if certFile != "" && keyFile != "" {
-		err = srv.ServeTLS(ln, certFile, keyFile)
-	} else {
-		err = srv.Serve(ln)
+	// Apply server options
+	for _, opt := range cfg.serverOptions {
+		opt(srv)
 	}
 
-	if err != nil && err != http.ErrServerClosed {
-		return err
+	server := &Server{
+		Server: srv,
+		config: cfg,
 	}
 
-	<-quit
-	return nil
+	return server.serve(ln, certFile, keyFile)
 }
