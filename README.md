@@ -4,7 +4,7 @@
 
 ## Installation and Usage
 
-Just `go get github.com/yourusername/httpgrace` and replace `http` with `httpgrace` in your existing code:
+Just `go get github.com/enrichman/httpgrace` and replace `http` with `httpgrace` in your existing code:
 
 ```go
 // Before
