@@ -64,6 +64,11 @@ httpgrace.WithSignals(syscall.SIGTERM, syscall.SIGUSR1)
 
 // Provide custom logger (default: slog.Default())
 httpgrace.WithLogger(customLogger)
+
+// Provide a function to run before shutdown
+httpgrace.WithBeforeShutdownHook(func() {
+    time.Sleep(5 * time.Second)
+})
 ```
 
 ### Server Options
