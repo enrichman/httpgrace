@@ -15,10 +15,11 @@ import (
 type Option func(*serverConfig)
 
 type serverConfig struct {
-	shutdownTimeout time.Duration
-	logger          *slog.Logger
-	signals         []os.Signal
-	serverOptions   []ServerOption
+	shutdownTimeout    time.Duration
+	logger             *slog.Logger
+	signals            []os.Signal
+	beforeShutdownHook func()
+	serverOptions      []ServerOption
 }
 
 // ServerOption configures the underlying http.Server
@@ -26,9 +27,10 @@ type ServerOption func(*http.Server)
 
 func defaultConfig() serverConfig {
 	return serverConfig{
-		shutdownTimeout: 10 * time.Second,
-		logger:          slog.Default(),
-		signals:         []os.Signal{syscall.SIGINT, syscall.SIGTERM},
+		shutdownTimeout:    10 * time.Second,
+		logger:             slog.Default(),
+		signals:            []os.Signal{syscall.SIGINT, syscall.SIGTERM},
+		beforeShutdownHook: func() {}, // Default no-op hook
 	}
 }
 
@@ -53,6 +55,14 @@ func WithSignals(signals ...os.Signal) Option {
 	return func(cfg *serverConfig) {
 		if len(signals) > 0 {
 			cfg.signals = signals
+		}
+	}
+}
+
+func WithBeforeShutdownHook(hook func()) Option {
+	return func(cfg *serverConfig) {
+		if hook != nil {
+			cfg.beforeShutdownHook = hook
 		}
 	}
 }
@@ -205,6 +215,8 @@ func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
 	defer cancel()
+
+	s.config.beforeShutdownHook()
 
 	shutdownStart := time.Now()
 	err := s.Server.Shutdown(ctx)
