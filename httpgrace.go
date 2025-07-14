@@ -18,6 +18,7 @@ type serverConfig struct {
 	shutdownTimeout time.Duration
 	logger          *slog.Logger
 	signals         []os.Signal
+	beforeShutdown  func()
 	serverOptions   []ServerOption
 }
 
@@ -29,6 +30,7 @@ func defaultConfig() serverConfig {
 		shutdownTimeout: 10 * time.Second,
 		logger:          slog.Default(),
 		signals:         []os.Signal{syscall.SIGINT, syscall.SIGTERM},
+		beforeShutdown:  func() {}, // Default no-op hook
 	}
 }
 
@@ -53,6 +55,14 @@ func WithSignals(signals ...os.Signal) Option {
 	return func(cfg *serverConfig) {
 		if len(signals) > 0 {
 			cfg.signals = signals
+		}
+	}
+}
+
+func WithBeforeShutdown(fn func()) Option {
+	return func(cfg *serverConfig) {
+		if fn != nil {
+			cfg.beforeShutdown = fn
 		}
 	}
 }
@@ -205,6 +215,8 @@ func (s *Server) handleShutdown(sigChan <-chan os.Signal, quit chan<- error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
 	defer cancel()
+
+	s.config.beforeShutdown()
 
 	shutdownStart := time.Now()
 	err := s.Server.Shutdown(ctx)
