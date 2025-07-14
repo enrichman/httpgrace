@@ -66,7 +66,7 @@ httpgrace.WithSignals(syscall.SIGTERM, syscall.SIGUSR1)
 httpgrace.WithLogger(customLogger)
 
 // Provide a function to run before shutdown
-httpgrace.WithBeforeShutdownHook(func() {
+httpgrace.WithBeforeShutdown(func() {
     time.Sleep(5 * time.Second)
 })
 ```
